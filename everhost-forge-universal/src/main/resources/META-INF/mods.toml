@@ -1,0 +1,47 @@
+modLoader="javafml"
+loaderVersion="[47,48)"
+license="CC0-1.0"
+issueTrackerURL="https://github.com/epicsniper106/EverHost/issues"
+clientSideOnly=false
+
+[[mods]]
+modId="everhost"
+version="${file.jarVersion}"
+displayName="EverHost"
+displayURL="https://github.com/epicsniper106/EverHost"
+logoFile="assets/everhost/icon.png"
+authors="jtbre, OpenAI Codex"
+displayTest="IGNORE_SERVER_VERSION"
+description='''
+Manage persistent Fabric and Forge servers, CurseForge profiles, mods, plugins,
+world settings, performance, access, backups, and the live console entirely
+inside Minecraft.
+'''
+
+[[dependencies.everhost]]
+modId="forge"
+mandatory=true
+versionRange="[47,48)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.everhost]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.20.2)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.everhost]]
+modId="e4mc"
+mandatory=false
+versionRange="[6.1.1,)"
+ordering="AFTER"
+side="CLIENT"
+
+[[dependencies.everhost]]
+modId="distanthorizons"
+mandatory=false
+versionRange="[3.2.0,)"
+ordering="AFTER"
+side="CLIENT"

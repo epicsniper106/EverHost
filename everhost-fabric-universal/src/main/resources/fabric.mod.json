@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "everhost",
+  "version": "${version}",
+  "name": "EverHost",
+  "description": "Manage persistent Fabric and Forge servers, CurseForge profiles, mods, plugins, settings, and console entirely inside Minecraft.",
+  "authors": ["jtbre"],
+  "contributors": ["OpenAI Codex"],
+  "contact": {
+    "homepage": "https://github.com/epicsniper106/EverHost",
+    "sources": "https://github.com/epicsniper106/EverHost",
+    "issues": "https://github.com/epicsniper106/EverHost/issues"
+  },
+  "license": "CC0-1.0",
+  "icon": "assets/everhost/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["dev.everhost.EverHostMod"],
+    "client": ["dev.everhost.client.EverHostClient"],
+    "modmenu": ["dev.everhost.client.EverHostModMenu"]
+  },
+  "mixins": ["everhost.client.mixins.json", "everhost.server.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": "${minecraft_dependency}",
+    "java": "${java_dependency}",
+    "fabric-api": "${fabric_api_dependency}"
+  },
+  "recommends": {
+    "e4mc": ">=6.1.1",
+    "distanthorizons": ">=3.2.0-b"
+  },
+  "suggests": {
+    "modmenu": "*",
+    "essential-container": "*",
+    "lithium": "*",
+    "ferritecore": "*",
+    "chunky": "*"
+  },
+  "custom": {
+    "modmenu": { "links": {} }
+  }
+}

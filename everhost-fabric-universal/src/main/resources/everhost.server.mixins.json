@@ -1,0 +1,7 @@
+{
+  "required": true,
+  "package": "dev.everhost.server.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "server": ["E4mcCommandSourceCompatibilityMixin"],
+  "injectors": { "defaultRequire": 1 }
+}

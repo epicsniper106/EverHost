@@ -1,0 +1,86 @@
+buildscript {
+    repositories {
+        maven { url = 'https://maven.minecraftforge.net/' }
+        mavenCentral()
+    }
+    dependencies {
+        classpath group: 'net.minecraftforge.gradle', name: 'ForgeGradle', version: '5.1.77'
+    }
+}
+
+apply plugin: 'net.minecraftforge.gradle'
+apply plugin: 'java'
+
+version = '2.2.0-beta.11'
+group = 'dev.everhost'
+archivesBaseName = 'everhost-forge-1.20.1'
+
+sourceCompatibility = JavaVersion.VERSION_17
+targetCompatibility = JavaVersion.VERSION_17
+
+sourceSets.main.java.srcDir '../everhost-routing-common/src/main/java'
+
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+    runs {
+        client {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'info'
+			if (project.hasProperty('everhost_test_page')) {
+				property 'everhost.test.page', project.property('everhost_test_page')
+			}
+			if (project.hasProperty('everhost_test_world_section')) {
+				property 'everhost.test.worldSection', project.property('everhost_test_world_section')
+			}
+            args '--quickPlayMultiplayer', 'localhost:25592', '--username', 'EHForgeTest'
+            mods { everhost { source sourceSets.main } }
+        }
+        server {
+            workingDirectory project.file('run-server')
+            property 'forge.logging.console.level', 'info'
+            args 'nogui'
+            mods { everhost { source sourceSets.main } }
+        }
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.4.10'
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.3'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+processResources {
+    def updateRepository = project.findProperty('update_repository') ?: ''
+    inputs.property 'version', project.version
+    inputs.property 'updateRepository', updateRepository
+    filesMatching('everhost-update.properties') {
+        expand version: project.version, repository: updateRepository
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 17
+}
+
+jar {
+    manifest {
+        attributes([
+            'Specification-Title': 'EverHost',
+            'Specification-Vendor': 'jtbre',
+            'Specification-Version': '2',
+            'Implementation-Title': project.name,
+            'Implementation-Version': project.version,
+            'Implementation-Vendor': 'jtbre'
+        ])
+    }
+    finalizedBy 'reobfJar'
+}
