@@ -1,0 +1,39 @@
+name: Publish EverHost release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Publish verified release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_dir="release-assets/${GITHUB_REF_NAME}"
+          test -f "${asset_dir}/EverHost.2.2.Fabric.1.20.1.jar"
+          test -f "${asset_dir}/EverHost.2.2.Fabric.1.21.11.Full.jar"
+          test -f "${asset_dir}/EverHost.2.2.Forge.1.20.1.jar"
+          test -f "${asset_dir}/SHA256SUMS.txt"
+          (cd "${asset_dir}" && sha256sum --check SHA256SUMS.txt)
+          gh release create "${GITHUB_REF_NAME}" \
+            "${asset_dir}/EverHost.2.2.Fabric.1.20.1.jar" \
+            "${asset_dir}/EverHost.2.2.Fabric.1.21.11.Full.jar" \
+            "${asset_dir}/EverHost.2.2.Forge.1.20.1.jar" \
+            "${asset_dir}/SHA256SUMS.txt" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --latest \
+            --title "EverHost 1.0 Release - Beta 11" \
+            --notes-file "docs/releases/2.2.0-beta.11/RELEASE-NOTES.md"
