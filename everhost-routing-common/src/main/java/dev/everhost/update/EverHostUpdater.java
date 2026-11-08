@@ -29,6 +29,7 @@ import java.util.regex.Pattern;
 
 /** Automatic, checksum-verified EverHost updates delivered through GitHub Releases. */
 public final class EverHostUpdater {
+	private static final java.util.concurrent.atomic.AtomicBoolean INSTALLING = new java.util.concurrent.atomic.AtomicBoolean();
 	private static final Pattern REPOSITORY = Pattern.compile("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+");
 	private static final Pattern CHECKSUM = Pattern.compile("(?i)^([0-9a-f]{64})\\s+\\*?(.*)$");
 	private static final long MAX_RELEASE_LIST_BYTES = 2L * 1024L * 1024L;
@@ -61,6 +62,11 @@ public final class EverHostUpdater {
 	public static void install(
 		Path gameDirectory, Path javaExecutable, Path installedJar, UpdateCandidate candidate, Consumer<Notice> notices
 	) {
+
+        if (!INSTALLING.compareAndSet(false, true)) {
+            notices.accept(new Notice(NoticeType.FAILED, "An EverHost update is already being prepared.", candidate));
+            return;
+        }
 		Thread worker = new Thread(() -> {
 			try {
 				BuildInfo build = BuildInfo.load();
@@ -73,6 +79,7 @@ public final class EverHostUpdater {
 				notices.accept(new Notice(NoticeType.READY,
 					"EverHost " + candidate.version() + " is verified and ready to install.", candidate));
 			} catch (Exception exception) {
+				INSTALLING.set(false);
 				notices.accept(new Notice(NoticeType.FAILED,
 					exception.getMessage() == null ? exception.toString() : exception.getMessage(), candidate));
 			}
@@ -179,10 +186,6 @@ public final class EverHostUpdater {
 		return 0;
 	}
 
-	static String installerSourceForTest() {
-		return INSTALLER_SOURCE;
-	}
-
 	private static UpdateCandidate fetchCandidate(BuildInfo build) throws Exception {
 		URI releases = URI.create("https://api.github.com/repos/" + build.repository() + "/releases?per_page=20");
 		HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15))
@@ -256,37 +259,101 @@ public final class EverHostUpdater {
 		}
 	}
 
-	private static void launchInstaller(
-		Path gameDirectory, Path javaExecutable, Path installedJar, Path staged, String expectedSha256, String version
-	) throws IOException {
-		Path updateRoot = gameDirectory.resolve("everhost").resolve("updates");
-		Path source = updateRoot.resolve("EverHostUpdateInstaller.java");
-		Path backups = gameDirectory.resolve("everhost").resolve("previous-mod-jars").resolve("automatic-updates");
-		Path log = updateRoot.resolve("installer.log");
-		Path marker = updateRoot.resolve("pending.properties");
-		Path result = updateRoot.resolve("result.properties");
-		Files.createDirectories(backups);
-		Files.deleteIfExists(result);
-		Files.writeString(source, INSTALLER_SOURCE, StandardCharsets.UTF_8);
-		Properties pending = new Properties();
-		pending.setProperty("installed", installedJar.toString());
-		pending.setProperty("staged", staged.toString());
-		pending.setProperty("sha256", expectedSha256);
-		pending.setProperty("version", version);
-		try (var writer = Files.newBufferedWriter(marker, StandardCharsets.UTF_8)) {
-			pending.store(writer, "EverHost automatic update");
-		}
-		Path launcher = javaExecutable;
-		if (isWindows()) {
-			Path javaw = javaExecutable.resolveSibling("javaw.exe");
-			if (Files.isRegularFile(javaw)) launcher = javaw;
-		}
-		new ProcessBuilder(
-			launcher.toString(), source.toString(), Long.toString(ProcessHandle.current().pid()),
-			installedJar.toString(), staged.toString(), backups.toString(), expectedSha256, log.toString(), marker.toString(),
-			version, result.toString(), "true"
-		).directory(gameDirectory.toFile()).redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(log.toFile())).start();
-	}
+
+    static void launchInstaller(
+        Path gameDirectory, Path javaExecutable, Path installedJar, Path staged, String expectedSha256, String version
+    ) throws Exception {
+        Path updateRoot = gameDirectory.resolve("everhost").resolve("updates");
+        Path installer = writeInstaller(updateRoot);
+        Path backups = gameDirectory.resolve("everhost").resolve("previous-mod-jars").resolve("automatic-updates");
+        Path log = updateRoot.resolve("installer.log");
+        Path marker = updateRoot.resolve("pending.properties");
+        Path result = updateRoot.resolve("result.properties");
+        String nonce = java.util.UUID.randomUUID().toString();
+        Path ready = updateRoot.resolve("installer-" + nonce + ".ready");
+        Files.createDirectories(backups);
+        // The lock survives client shutdown in the worker. Do not replace a live installer's plan.
+        try (var channel = java.nio.channels.FileChannel.open(updateRoot.resolve("installer.lock"),
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE);
+             var lock = channel.tryLock()) {
+            if (lock == null) throw new IOException("Another EverHost updater is already waiting for Minecraft to close.");
+            Files.deleteIfExists(result);
+            Properties pending = new Properties();
+            pending.setProperty("installed", installedJar.toString());
+            pending.setProperty("staged", staged.toString());
+            pending.setProperty("sha256", expectedSha256);
+            pending.setProperty("version", version);
+            try (var writer = Files.newBufferedWriter(marker, StandardCharsets.UTF_8)) {
+                pending.store(writer, "EverHost automatic update");
+            }
+        }
+        Path launcher = javaExecutable;
+        if (isWindows()) {
+            Path javaw = javaExecutable.resolveSibling("javaw.exe");
+            if (Files.isRegularFile(javaw)) launcher = javaw;
+        }
+        Process process = new ProcessBuilder(
+            launcher.toString(), "-cp", installer.toString(), EverHostUpdateInstaller.class.getName(),
+            Long.toString(ProcessHandle.current().pid()), installedJar.toString(), staged.toString(),
+            backups.toString(), expectedSha256, log.toString(), marker.toString(), version, result.toString(),
+            "true", ready.toString(), nonce, sha256(installedJar)
+        ).directory(gameDirectory.toFile()).redirectErrorStream(true)
+            .redirectOutput(ProcessBuilder.Redirect.appendTo(log.toFile())).start();
+        try {
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(15);
+            while (System.nanoTime() < deadline) {
+                if (!process.isAlive()) {
+                    String message = "The EverHost installer could not start. See everhost/updates/installer.log.";
+                    if (Files.isRegularFile(result)) {
+                        Properties values = new Properties();
+                        try (var reader = Files.newBufferedReader(result, StandardCharsets.UTF_8)) { values.load(reader); }
+                        message = values.getProperty("message", message);
+                    }
+                    throw new IOException(message + " Minecraft has been left open.");
+                }
+                if (Files.isRegularFile(ready) && nonce.equals(Files.readString(ready, StandardCharsets.UTF_8))) return;
+                Thread.sleep(100L);
+            }
+            throw new IOException("The EverHost installer did not become ready. Minecraft has been left open.");
+        } catch (Exception failure) {
+            process.destroy();
+            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) process.destroyForcibly();
+            Files.deleteIfExists(marker);
+            throw failure;
+        } finally { Files.deleteIfExists(ready); }
+    }
+
+    static Path writeInstaller(Path updateRoot) throws Exception {
+        Files.createDirectories(updateRoot);
+        String entry = EverHostUpdateInstaller.class.getName().replace('.', '/') + ".class";
+        byte[] compiled;
+        try (InputStream input = EverHostUpdater.class.getResourceAsStream("/" + entry)) {
+            if (input == null) throw new IOException("The precompiled EverHost installer is missing from this build.");
+            compiled = input.readAllBytes();
+        }
+        String id = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(compiled)).substring(0, 16);
+        Path installer = updateRoot.resolve("everhost-installer-" + id + ".jar");
+        if (Files.isRegularFile(installer)) {
+            try (JarFile existing = new JarFile(installer.toFile())) {
+                var stored = existing.getJarEntry(entry);
+                if (stored != null) {
+                    try (InputStream input = existing.getInputStream(stored)) {
+                        if (java.util.Arrays.equals(compiled, input.readAllBytes())) return installer;
+                    }
+                }
+            } catch (IOException ignored) { }
+        }
+        Path temporary = Files.createTempFile(updateRoot, "everhost-installer-", ".tmp");
+        try {
+            try (var jar = new java.util.jar.JarOutputStream(Files.newOutputStream(temporary))) {
+                jar.putNextEntry(new java.util.jar.JarEntry(entry));
+                jar.write(compiled);
+                jar.closeEntry();
+            }
+            move(temporary, installer);
+        } finally { Files.deleteIfExists(temporary); }
+        return installer;
+    }
 
 	private static String getText(HttpClient http, URI uri, long maximumBytes, String version) throws Exception {
 		HttpResponse<byte[]> response = http.send(request(uri, version).timeout(Duration.ofSeconds(45)).build(),
@@ -400,150 +467,4 @@ public final class EverHostUpdater {
 		}
 	}
 
-	private static final String INSTALLER_SOURCE = """
-		import java.io.InputStream;
-		import java.nio.channels.FileChannel;
-		import java.nio.channels.FileLock;
-		import java.nio.charset.StandardCharsets;
-		import java.nio.file.AtomicMoveNotSupportedException;
-		import java.nio.file.Files;
-		import java.nio.file.Path;
-		import java.nio.file.StandardCopyOption;
-		import java.nio.file.StandardOpenOption;
-		import java.security.MessageDigest;
-		import java.time.Instant;
-		import java.util.ArrayList;
-		import java.util.HexFormat;
-		import java.util.List;
-		import java.util.Properties;
-
-		public class EverHostUpdateInstaller {
-		  public static void main(String[] args) throws Exception {
-		    long parentPid = Long.parseLong(args[0]);
-		    Path installed = Path.of(args[1]);
-		    Path staged = Path.of(args[2]);
-		    Path backups = Path.of(args[3]);
-		    String expected = args[4];
-		    Path log = Path.of(args[5]);
-		    Path marker = Path.of(args[6]);
-		    String version = args[7];
-		    Path result = Path.of(args[8]);
-		    boolean reopen = Boolean.parseBoolean(args[9]);
-		    try {
-		      install(parentPid, installed, staged, backups, expected, log, marker, version, result);
-		    } catch (Throwable failure) {
-		      String message = safeMessage(failure);
-		      append(log, "EverHost update failed: " + message);
-		      writeResult(result, "error", version, expected, message);
-		      Files.deleteIfExists(marker);
-		    } finally {
-		      if (reopen) {
-		        String warning = reopenCurseForge();
-		        if (!warning.isBlank()) append(log, warning);
-		      }
-		    }
-		  }
-
-		  private static void install(long parentPid, Path installed, Path staged, Path backups, String expected,
-		      Path log, Path marker, String version, Path result) throws Exception {
-		    Files.createDirectories(backups);
-		    Files.createDirectories(result.getParent());
-		    Path lockPath = marker.resolveSibling("installer.lock");
-		    try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-		         FileLock lock = channel.tryLock()) {
-		      if (lock == null) throw new Exception("Another EverHost updater is already running.");
-		      while (ProcessHandle.of(parentPid).map(ProcessHandle::isAlive).orElse(false)) Thread.sleep(500L);
-		      if (!Files.isRegularFile(staged) || !sha256(staged).equalsIgnoreCase(expected)) {
-		        throw new Exception("The staged EverHost update failed its final checksum check.");
-		      }
-		      long deadline = System.currentTimeMillis() + 10L * 60L * 1000L;
-		      Exception lastFailure = null;
-		      while (System.currentTimeMillis() < deadline) {
-		        Path retiring = installed.resolveSibling(installed.getFileName() + ".everhost-old");
-		        try {
-		          move(installed, retiring);
-		          try {
-		            move(staged, installed);
-		            if (!sha256(installed).equalsIgnoreCase(expected)) {
-		              throw new Exception("The installed EverHost JAR failed its final checksum check.");
-		            }
-		            Path backup = backups.resolve(installed.getFileName() + "." + System.currentTimeMillis() + ".bak");
-		            move(retiring, backup);
-		            Files.deleteIfExists(marker);
-		            writeResult(result, "success", version, expected, "EverHost " + version + " installed successfully.");
-		            append(log, "Installed EverHost " + version + " successfully");
-		            return;
-		          } catch (Exception installFailure) {
-		            Files.deleteIfExists(installed);
-		            move(retiring, installed);
-		            throw installFailure;
-		          }
-		        } catch (Exception lockedOrBusy) {
-		          lastFailure = lockedOrBusy;
-		          Thread.sleep(2000L);
-		        }
-		      }
-		      throw new Exception("EverHost stayed in use after Minecraft closed. " + safeMessage(lastFailure));
-		    }
-		  }
-
-		  private static void writeResult(Path result, String status, String version, String expected, String message) throws Exception {
-		    Properties values = new Properties();
-		    values.setProperty("status", status);
-		    values.setProperty("version", version);
-		    values.setProperty("sha256", expected);
-		    values.setProperty("message", message);
-		    try (var writer = Files.newBufferedWriter(result, StandardCharsets.UTF_8)) {
-		      values.store(writer, "EverHost automatic update result");
-		    }
-		  }
-
-		  private static String reopenCurseForge() {
-		    if (!System.getProperty("os.name", "").toLowerCase().contains("win")) return "";
-		    List<Path> candidates = new ArrayList<>();
-		    String x86 = System.getenv("ProgramFiles(x86)");
-		    String programFiles = System.getenv("ProgramFiles");
-		    if (x86 != null && !x86.isBlank()) candidates.add(Path.of(x86, "Overwolf", "OverwolfLauncher.exe"));
-		    if (programFiles != null && !programFiles.isBlank()) candidates.add(Path.of(programFiles, "Overwolf", "OverwolfLauncher.exe"));
-		    for (Path launcher : candidates) {
-		      if (!Files.isRegularFile(launcher)) continue;
-		      try {
-		        new ProcessBuilder(launcher.toString(), "-launchapp", "cchhcaiapeikjbdbpfplgmpobbcdkdaphclbmkbj").start();
-		        return "";
-		      } catch (Exception exception) {
-		        return "EverHost was installed, but CurseForge could not be reopened: " + safeMessage(exception);
-		      }
-		    }
-		    return "EverHost was installed, but the CurseForge Overwolf launcher was not found.";
-		  }
-
-		  private static String sha256(Path path) throws Exception {
-		    MessageDigest digest = MessageDigest.getInstance("SHA-256");
-		    try (InputStream input = Files.newInputStream(path)) {
-		      byte[] buffer = new byte[65536];
-		      for (int read; (read = input.read(buffer)) >= 0;) digest.update(buffer, 0, read);
-		    }
-		    return HexFormat.of().formatHex(digest.digest());
-		  }
-
-		  private static void move(Path source, Path target) throws Exception {
-		    try {
-		      Files.move(source, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
-		    } catch (AtomicMoveNotSupportedException unsupported) {
-		      Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
-		    }
-		  }
-
-		  private static String safeMessage(Throwable failure) {
-		    if (failure == null) return "Unknown installation problem.";
-		    String message = failure.getMessage();
-		    return message == null || message.isBlank() ? failure.toString() : message;
-		  }
-
-		  private static void append(Path log, String message) throws Exception {
-		    Files.writeString(log, Instant.now() + " " + message + System.lineSeparator(), StandardCharsets.UTF_8,
-		      StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-		  }
-		}
-		""";
 }

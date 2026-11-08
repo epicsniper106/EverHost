@@ -415,17 +415,7 @@ public final class HostDaemon {
 	}
 
 	private List<ModInfo> selectedMods(Profile profile, Properties config) {
-		Map<String, String> overrides = decodeModModes(config.getProperty("modModes", ""));
-		List<ModInfo> selected = new ArrayList<>();
-		for (ModInfo mod : profile.mods()) {
-			String mode = overrides.get(mod.path.getFileName().toString());
-			if (mode != null) {
-				mod.selected = !"OFF".equals(mode);
-				mod.clientRequired = "REQUIRED".equals(mode);
-			}
-			if (mod.selected) selected.add(mod);
-		}
-		return selected;
+		return ServerModSelection.select(profile, config);
 	}
 
 	private static Map<String, String> decodeModModes(String encoded) {

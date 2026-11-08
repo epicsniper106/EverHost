@@ -37,7 +37,7 @@ public final class PlayitManager implements AutoCloseable {
 	private final Path configFile;
 	private final Path statusFile;
 	private final Path secretFile;
-	private final Path binary;
+	private Path binary;
 	private final String socket;
 	private final Path logFile;
 	private final Consumer<String> logger;
@@ -422,6 +422,12 @@ public final class PlayitManager implements AutoCloseable {
 	}
 
 	private void ensureBinary() throws Exception {
+		Path local = PlayitBinaryOverride.verifiedBinary(root);
+		if (local != null) {
+			binary = local;
+			return;
+		}
+		binary = root.resolve("tools").resolve("playitd-" + VERSION + ".exe");
 		if (Files.isRegularFile(binary) && BINARY_SHA256.equalsIgnoreCase(sha256(binary))) return;
 		Files.createDirectories(binary.getParent());
 		Path temporary = binary.resolveSibling(binary.getFileName() + ".download");
@@ -495,7 +501,7 @@ public final class PlayitManager implements AutoCloseable {
 	}
 
 	private boolean agentRunning() {
-		return agentHandle != null && agentHandle.isAlive();
+		return PlayitProcessRecovery.ensureRunning(this);
 	}
 
 	private void stopAgent() {

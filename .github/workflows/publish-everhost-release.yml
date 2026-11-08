@@ -22,18 +22,22 @@ jobs:
         run: |
           set -euo pipefail
           asset_dir="release-assets/${GITHUB_REF_NAME}"
-          test -f "${asset_dir}/EverHost.2.2.Fabric.1.20.1.jar"
-          test -f "${asset_dir}/EverHost.2.2.Fabric.1.21.11.Full.jar"
-          test -f "${asset_dir}/EverHost.2.2.Forge.1.20.1.jar"
+          version="${GITHUB_REF_NAME#v}"
+          notes="docs/releases/${version}/RELEASE-NOTES.md"
+          shopt -s nullglob
+          assets=("${asset_dir}"/EverHost.*.jar)
+          test "${#assets[@]}" -gt 0
+          test -f "${notes}"
           test -f "${asset_dir}/SHA256SUMS.txt"
           (cd "${asset_dir}" && sha256sum --check SHA256SUMS.txt)
+          for asset in "${assets[@]}"; do
+            (cd "${asset_dir}" && sha256sum "$(basename "${asset}")") | grep -Fxf "${asset_dir}/SHA256SUMS.txt"
+          done
           gh release create "${GITHUB_REF_NAME}" \
-            "${asset_dir}/EverHost.2.2.Fabric.1.20.1.jar" \
-            "${asset_dir}/EverHost.2.2.Fabric.1.21.11.Full.jar" \
-            "${asset_dir}/EverHost.2.2.Forge.1.20.1.jar" \
+            "${assets[@]}" \
             "${asset_dir}/SHA256SUMS.txt" \
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --latest \
-            --title "EverHost 1.0 Release - Beta 11" \
-            --notes-file "docs/releases/2.2.0-beta.11/RELEASE-NOTES.md"
+            --title "EverHost 1.0 Release - ${version}" \
+            --notes-file "${notes}"

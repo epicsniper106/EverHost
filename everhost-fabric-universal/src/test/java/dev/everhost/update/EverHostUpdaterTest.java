@@ -69,19 +69,19 @@ final class EverHostUpdaterTest {
 		Path log = root.resolve("installer.log");
 		Path marker = root.resolve("pending.properties");
 		Path result = root.resolve("result.properties");
-		Path source = root.resolve("EverHostUpdateInstaller.java");
+		Path installer = EverHostUpdater.writeInstaller(root);
 		Files.writeString(installed, "old build", StandardCharsets.UTF_8);
 		Files.writeString(staged, "new build", StandardCharsets.UTF_8);
 		Files.writeString(marker, "pending", StandardCharsets.UTF_8);
-		Files.writeString(source, EverHostUpdater.installerSourceForTest(), StandardCharsets.UTF_8);
 		String checksum = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
 			.digest(Files.readAllBytes(staged)));
 		Path java = Path.of(System.getProperty("java.home"), "bin",
 			System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java");
 
-		Process process = new ProcessBuilder(java.toString(), source.toString(), Long.toString(Long.MAX_VALUE),
+		Process process = new ProcessBuilder(java.toString(), "--limit-modules", "java.base", "-cp", installer.toString(), EverHostUpdateInstaller.class.getName(), Long.toString(Long.MAX_VALUE),
 			installed.toString(), staged.toString(), backups.toString(), checksum, log.toString(), marker.toString(),
-			"2.2.0-beta.8", result.toString(), "false").start();
+			"2.2.0-beta.8", result.toString(), "false", root.resolve("ready").toString(), "test",
+			HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(installed)))).start();
 		assertTrue(process.waitFor(30, TimeUnit.SECONDS));
 		assertEquals(0, process.exitValue());
 		assertEquals("new build", Files.readString(installed));
@@ -101,22 +101,22 @@ final class EverHostUpdaterTest {
 		Path log = root.resolve("installer.log");
 		Path marker = root.resolve("pending.properties");
 		Path result = root.resolve("result.properties");
-		Path source = root.resolve("EverHostUpdateInstaller.java");
+		Path installer = EverHostUpdater.writeInstaller(root);
 		Files.writeString(installed, "old build", StandardCharsets.UTF_8);
 		Files.writeString(staged, "changed download", StandardCharsets.UTF_8);
 		Files.writeString(marker, "pending", StandardCharsets.UTF_8);
-		Files.writeString(source, EverHostUpdater.installerSourceForTest(), StandardCharsets.UTF_8);
 		String wrongChecksum = "0".repeat(64);
 		Path java = Path.of(System.getProperty("java.home"), "bin",
 			System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java");
 
-		Process process = new ProcessBuilder(java.toString(), source.toString(), Long.toString(Long.MAX_VALUE),
+		Process process = new ProcessBuilder(java.toString(), "--limit-modules", "java.base", "-cp", installer.toString(), EverHostUpdateInstaller.class.getName(), Long.toString(Long.MAX_VALUE),
 			installed.toString(), staged.toString(), backups.toString(), wrongChecksum, log.toString(), marker.toString(),
-			"2.2.0-beta.8", result.toString(), "false").start();
+			"2.2.0-beta.8", result.toString(), "false", root.resolve("ready").toString(), "test",
+			HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(installed)))).start();
 		assertTrue(process.waitFor(30, TimeUnit.SECONDS));
 		assertEquals(0, process.exitValue());
 		assertEquals("old build", Files.readString(installed));
-		assertFalse(Files.exists(marker));
+		assertTrue(Files.exists(marker));
 		assertTrue(Files.readString(result).contains("status=error"));
 		assertTrue(Files.readString(result).contains("final checksum check"));
 	}
