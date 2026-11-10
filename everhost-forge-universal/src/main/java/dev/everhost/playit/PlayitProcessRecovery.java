@@ -65,13 +65,17 @@ public final class PlayitProcessRecovery {
                 $_.ExecutablePath -eq $expected -and
                 [regex]::IsMatch($_.CommandLine, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
             } | ForEach-Object { [Console]::WriteLine($_.ProcessId) }
+            [Console]::WriteLine('EVERHOST_QUERY_DONE')
             """;
         Process query = null;
+        Path queryFile = null;
         try {
-            // PowerShell's native -Command parsing consumes embedded quotes on Windows.
-            // UTF-16LE preserves the exact quoted-path matcher for profiles containing spaces.
-            String encoded = java.util.Base64.getEncoder().encodeToString(script.getBytes(java.nio.charset.StandardCharsets.UTF_16LE));
-            ProcessBuilder builder = new ProcessBuilder(powershell.toString(), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded);
+            // A script file preserves quoted Windows paths without native -Command quote stripping.
+            // Check its completion marker: a silently skipped query must never authorize another daemon.
+            queryFile = java.nio.file.Files.createTempFile("everhost-process-ownership-", ".ps1");
+            java.nio.file.Files.writeString(queryFile, script, java.nio.charset.StandardCharsets.UTF_8);
+            ProcessBuilder builder = new ProcessBuilder(powershell.toString(), "-NoLogo", "-NoProfile",
+                "-NonInteractive", "-File", queryFile.toString());
             builder.environment().put("EVERHOST_RECOVERY_BINARY", binary.toString());
             builder.environment().put("EVERHOST_RECOVERY_SECRET", secret.toString());
             query = builder.redirectErrorStream(true).start();
@@ -80,6 +84,8 @@ public final class PlayitProcessRecovery {
             }
             if (query.exitValue() != 0) throw new IllegalStateException("Windows could not check existing Playit processes; no new agent was launched.");
             String output = new String(query.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            if (!output.lines().anyMatch(line -> line.strip().equals("EVERHOST_QUERY_DONE")))
+                throw new IllegalStateException("Windows did not complete the Playit ownership check; no new agent was launched.");
             for (String line : output.lines().toList()) {
                 if (!line.strip().matches("[0-9]+")) continue;
                 ProcessHandle handle = ProcessHandle.of(Long.parseLong(line.strip())).orElse(null);
@@ -93,6 +99,7 @@ public final class PlayitProcessRecovery {
             throw new IllegalStateException("Windows could not check existing Playit processes; no new agent was launched.", failure);
         } finally {
             if (query != null && query.isAlive()) query.destroyForcibly();
+            if (queryFile != null) try { java.nio.file.Files.deleteIfExists(queryFile); } catch (java.io.IOException ignored) {}
         }
     }
 

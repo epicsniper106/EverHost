@@ -26,7 +26,9 @@ import java.util.Set;
 /** Holds the last server offer and starts the out-of-process exact-mod installer. */
 public final class ModInstallCoordinator {
 	private static final long OFFER_LIFETIME_MILLIS = 5L * 60L * 1000L;
-	private static volatile PendingOffer pendingOffer;
+	private static volatile Offer pendingOffer;
+    private static volatile Offer pendingOptionalOffer;
+    private static final java.util.concurrent.atomic.AtomicBoolean LAUNCHING = new java.util.concurrent.atomic.AtomicBoolean();
 
 	private ModInstallCoordinator() {
 	}
@@ -37,9 +39,44 @@ public final class ModInstallCoordinator {
 		List<Requirement> missing = requirements.stream()
 			.filter(requirement -> !requirement.satisfiedBy(installedModIds, installedJarHashes))
 			.toList();
-		pendingOffer = missing.isEmpty() ? null : new PendingOffer(List.copyOf(missing), System.currentTimeMillis());
+		pendingOffer = missing.isEmpty() ? null : new Offer(List.copyOf(missing), "", false, System.currentTimeMillis());
 		return missing;
 	}
+
+    public static synchronized List<Requirement> assessCatalog(Path game, String address,
+        List<Requirement> required, List<Requirement> optional, Set<String> ids, Set<String> hashes) throws IOException {
+        String key = ModDownloadPreferences.serverKey(address);
+        pendingOptionalOffer = null;
+        List<Requirement> missing = assess(required, ids, hashes);
+        if (!missing.isEmpty()) {
+            ModDownloadPreferences.requiredMissing(game, key);
+            pendingOffer = new Offer(missing, key, false, System.currentTimeMillis());
+        } else if (!ModDownloadPreferences.optionalSuppressed(game, key)) {
+            List<Requirement> extras = optional.stream().filter(r -> !r.satisfiedBy(ids, hashes)).toList();
+            if (!extras.isEmpty()) pendingOptionalOffer = new Offer(extras, key, true, System.currentTimeMillis());
+        }
+        return missing;
+    }
+
+    public static Offer requiredOffer() { return liveOffer(); }
+
+    public static Offer optionalOffer() {
+        Offer offer = pendingOptionalOffer;
+        if (offer != null && System.currentTimeMillis() - offer.createdAt() > OFFER_LIFETIME_MILLIS)
+            pendingOptionalOffer = null;
+        return pendingOptionalOffer;
+    }
+
+    public static void dismissOptional(Path game, Offer offer, boolean suppress) throws IOException {
+        if (offer == null || !offer.optional()) return;
+        ModDownloadPreferences.rememberOptional(game, offer.serverKey(), suppress);
+        if (pendingOptionalOffer == offer) pendingOptionalOffer = null;
+    }
+
+    public static void clearOffers() {
+        pendingOffer = null;
+        pendingOptionalOffer = null;
+    }
 
 	public static Set<String> hashes(Collection<Path> paths) {
 		Set<String> hashes = new LinkedHashSet<>();
@@ -58,17 +95,30 @@ public final class ModInstallCoordinator {
 	}
 
 	public static boolean hasPendingOffer() {
-		PendingOffer offer = liveOffer();
+		Offer offer = liveOffer();
 		return offer != null && !offer.requirements().isEmpty();
 	}
 
 	public static int pendingCount() {
-		PendingOffer offer = liveOffer();
+		Offer offer = liveOffer();
 		return offer == null ? 0 : offer.requirements().size();
 	}
 
 	public static Launch launch(Path gameDirectory, Path javaExecutable, Path everHostJar) throws IOException {
-		PendingOffer offer = liveOffer();
+        return launch(gameDirectory, javaExecutable, everHostJar, liveOffer());
+    }
+
+    public static Launch launch(Path gameDirectory, Path javaExecutable, Path everHostJar, Offer offer) throws IOException {
+        if (!LAUNCHING.compareAndSet(false, true)) throw new IOException("A mod installation is already starting.");
+        try {
+            return launchOnce(gameDirectory, javaExecutable, everHostJar, offer);
+        } catch (IOException | RuntimeException exception) {
+            LAUNCHING.set(false);
+            throw exception;
+        }
+    }
+
+    private static Launch launchOnce(Path gameDirectory, Path javaExecutable, Path everHostJar, Offer offer) throws IOException {
 		if (offer == null || offer.requirements().isEmpty()) {
 			throw new IOException("The server did not provide a current mod installation offer. Reconnect and try again.");
 		}
@@ -85,6 +135,8 @@ public final class ModInstallCoordinator {
 		Set<String> fileNames = new HashSet<>();
 		for (Requirement requirement : offer.requirements()) {
 			String problem = requirement.automaticInstallProblem();
+            if (!ModDownloadPreferences.curseForgeFallback(game) && !requirement.hasServerSource())
+                problem = requirement.name() + " is not available directly from the host. Ask the host to check mod delivery, or enable CurseForge fallback in Server > Mods.";
 			if (!problem.isBlank()) throw new IOException(problem);
 			if (!fileNames.add(requirement.fileName().toLowerCase(Locale.ROOT))) {
 				throw new IOException("The server supplied the same target filename for more than one required mod.");
@@ -98,19 +150,38 @@ public final class ModInstallCoordinator {
 		Files.createDirectories(root);
 		Files.deleteIfExists(result);
 		writePlan(plan, game, offer.requirements());
+        Path ready = root.resolve("ready-" + java.util.UUID.randomUUID() + ".txt");
+        String nonce = java.util.UUID.randomUUID().toString();
 
 		Path launcher = javaExecutable.toAbsolutePath().normalize();
 		if (isWindows()) {
 			Path javaw = launcher.resolveSibling("javaw.exe");
 			if (Files.isRegularFile(javaw)) launcher = javaw;
 		}
-		new ProcessBuilder(
-			launcher.toString(), "-cp", installed.toString(), ModInstallWorker.class.getName(),
-			Long.toString(ProcessHandle.current().pid()), game.toString(), plan.toString(), result.toString(), log.toString()
-		).directory(game.toFile()).redirectErrorStream(true)
-			.redirectOutput(ProcessBuilder.Redirect.appendTo(log.toFile())).start();
-		pendingOffer = null;
-		return new Launch(offer.requirements().size(), root);
+        Process worker = new ProcessBuilder(
+            launcher.toString(), "-cp", installed.toString(), ModInstallWorker.class.getName(),
+            Long.toString(ProcessHandle.current().pid()), game.toString(), plan.toString(), result.toString(), log.toString(),
+            ready.toString(), nonce
+        ).directory(game.toFile()).redirectErrorStream(true)
+            .redirectOutput(ProcessBuilder.Redirect.appendTo(log.toFile())).start();
+        long deadline = System.currentTimeMillis() + 15_000;
+        try {
+            while (System.currentTimeMillis() < deadline) {
+                if (Files.isRegularFile(ready) && nonce.equals(Files.readString(ready).strip())) {
+                    Files.deleteIfExists(ready);
+                    if (pendingOffer == offer) pendingOffer = null;
+                    if (pendingOptionalOffer == offer) pendingOptionalOffer = null;
+                    return new Launch(offer.requirements().size(), root);
+                }
+                if (!worker.isAlive()) break;
+                Thread.sleep(50);
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
+        worker.destroy();
+        throw new IOException("The installer could not start. Minecraft was kept open. See everhost/mod-installer/installer.log.");
+
 	}
 
 	/** Reads and independently verifies the worker result on the next Minecraft launch. */
@@ -188,6 +259,7 @@ public final class ModInstallCoordinator {
 		plan.setProperty("createdAt", Instant.now().toString());
 		plan.setProperty("gameDirectory", game.toString());
 		plan.setProperty("reopenCurseForge", "true");
+        plan.setProperty("curseForgeFallback", Boolean.toString(ModDownloadPreferences.curseForgeFallback(game)));
 		plan.setProperty("count", Integer.toString(requirements.size()));
 		for (int index = 0; index < requirements.size(); index++) {
 			Requirement requirement = requirements.get(index);
@@ -212,8 +284,8 @@ public final class ModInstallCoordinator {
 		move(temporary, target);
 	}
 
-	private static PendingOffer liveOffer() {
-		PendingOffer offer = pendingOffer;
+	private static Offer liveOffer() {
+		Offer offer = pendingOffer;
 		if (offer != null && System.currentTimeMillis() - offer.createdAt() > OFFER_LIFETIME_MILLIS) {
 			pendingOffer = null;
 			return null;
@@ -268,8 +340,10 @@ public final class ModInstallCoordinator {
 		return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win");
 	}
 
-	private record PendingOffer(List<Requirement> requirements, long createdAt) {
-	}
+    public record Offer(List<Requirement> requirements, String serverKey, boolean optional, long createdAt) {
+        public Offer { requirements = List.copyOf(requirements); }
+        public long totalBytes() { return requirements.stream().mapToLong(Requirement::fileSize).sum(); }
+    }
 
 	public record Launch(int modCount, Path installerDirectory) {
 	}

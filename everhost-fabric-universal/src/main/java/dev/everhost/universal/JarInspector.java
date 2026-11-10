@@ -29,8 +29,10 @@ final class JarInspector {
 		ModSide side = ModSide.UNCERTAIN;
 		String reason = "The mod does not declare a reliable server/client side.";
 		boolean clientRequired = false;
+        boolean clientCompatible = false;
 		try (ZipFile zip = new ZipFile(jar.toFile())) {
 			ZipEntry fabric = zip.getEntry("fabric.mod.json");
+            if (loader == LoaderType.FABRIC && fabric != null) clientCompatible = true;
 			if (fabric != null) {
 				Object parsed = MiniJson.parse(read(zip, fabric));
 				Map<String, Object> root = object(parsed);
@@ -52,6 +54,7 @@ final class JarInspector {
 				} else if ("server".equals(environment)) {
 					side = ModSide.SERVER;
 					reason = "fabric.mod.json marks this mod as server-only.";
+                    if (loader == LoaderType.FABRIC) clientCompatible = false;
 				} else if ("*".equals(environment) || entrypoints.containsKey("main") || entrypoints.containsKey("server")) {
 					side = ModSide.SERVER;
 					reason = "Fabric metadata declares a common or server entrypoint.";
@@ -64,6 +67,7 @@ final class JarInspector {
 				forge = zip.getEntry("META-INF/neoforge.mods.toml");
 			}
 			if (forge != null && loader == LoaderType.FORGE) {
+                clientCompatible = true;
 				String toml = read(zip, forge);
 				String modsSection = toml.split("(?m)^\\s*\\[\\[dependencies\\.", 2)[0];
 				Matcher idsMatcher = TOML_MOD_ID.matcher(modsSection);
@@ -113,7 +117,7 @@ final class JarInspector {
 			reason = "e4mc provides the dedicated server's public tunnel.";
 			clientRequired = false;
 		}
-		return new Inspection(side, reason, ids, dependencies, clientRequired);
+		return new Inspection(side, reason, ids, dependencies, clientRequired, clientCompatible);
 	}
 
 	private static String read(ZipFile zip, ZipEntry entry) throws IOException {
@@ -131,6 +135,6 @@ final class JarInspector {
 		return value instanceof String string ? string : "";
 	}
 
-	record Inspection(ModSide side, String reason, Set<String> modIds, Set<String> dependencies, boolean clientRequired) {
+	record Inspection(ModSide side, String reason, Set<String> modIds, Set<String> dependencies, boolean clientRequired, boolean clientCompatible) {
 	}
 }

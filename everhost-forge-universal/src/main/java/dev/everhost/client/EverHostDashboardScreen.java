@@ -1,5 +1,7 @@
 package dev.everhost.client;
 
+import dev.everhost.install.ModSharingCatalog;
+
 import dev.everhost.plugins.PluginSupport.Decision;
 import dev.everhost.plugins.PluginSupport.PluginInfo;
 import dev.everhost.plugins.PluginSupport.ScanResult;
@@ -304,7 +306,12 @@ public final class EverHostDashboardScreen extends Screen {
 		List<ModInfo> mods = service.selectedMods(draft);
 		int left = contentLeft();
 		int width = contentWidth();
-		int firstY = HEADER_HEIGHT + 54;
+		int settingsY = HEADER_HEIGHT + 49;
+        addButton("CurseForge fallback: " + (draft.curseForgeFallback ? "On" : "Off"), left, settingsY, width, () -> {
+            draft.curseForgeFallback = !draft.curseForgeFallback;
+            this.rebuildWidgets();
+        }, "Controls downloads for this Minecraft profile when joining a server. Off uses only the host. On tries CurseForge only if the host download fails. Save to apply.");
+        int firstY = settingsY + 27;
 		int navigationHeight = 28;
 		int rowsPerPage = Math.max(2, (this.height - FOOTER_HEIGHT - firstY - navigationHeight) / 23);
 		int pages = Math.max(1, (mods.size() + rowsPerPage - 1) / rowsPerPage);
@@ -322,9 +329,18 @@ public final class EverHostDashboardScreen extends Screen {
 			String fullLabel = prefix + "  |  " + mod.name;
 			String label = fullLabel;
 			int y = firstY + (index - first) * 23;
-			Button row = addButton(label, left, y, width, () -> cycleMod(mod),
-				mod.reason + " Click to cycle: Off excludes it, Server installs it only on the host, and Required also lists it as mandatory for joining players. File: " + mod.path.getFileName());
+			Button row = addButton(this.font.plainSubstrByWidth(label, Math.max(60, width - 121)), left, y, width - 112, () -> cycleMod(mod),
+				mod.reason + " Click to cycle: Off leaves it out of the server runtime, Server loads it on the host, and Required also requires joining players to install it. Optional sharing is controlled separately on the right. File: " + mod.path.getFileName());
 			row.active = !status.state().isBusyOrOnline();
+            boolean eligible = ModSharingCatalog.optionalByDefault(mod);
+            boolean optional = eligible && !draft.optionalModExclusions.contains(mod.path.getFileName().toString());
+            String shareLabel = mod.clientRequired ? "Required" : eligible ? "Optional: " + (optional ? "On" : "Off") : "Not shared";
+            Button share = addButton(shareLabel, left + width - 106, y, 106, () -> {
+                String file = mod.path.getFileName().toString();
+                if (!draft.optionalModExclusions.add(file)) draft.optionalModExclusions.remove(file);
+                this.rebuildWidgets();
+            }, "Offers this compatible extra separately to joining players. It is never required. Dependencies of other shared mods may still be needed. Apply with Save, then restart the hosted server.");
+            share.active = eligible && !status.state().isBusyOrOnline();
 		}
 		if (mods.isEmpty()) {
 			labels.add(new Label("This profile has no mod jars to review.", left, firstY + 6));

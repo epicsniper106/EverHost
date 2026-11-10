@@ -370,7 +370,7 @@ public final class HostDaemon {
 		syncProfileMods(runtimeMods);
 		PluginDeployment plugins = preparePlugins(profile, pluginsEnabled, pluginScan);
 		copyProfileConfigs(profile);
-		RequiredModsManifest.write(runtime, profile, selectedMods);
+		RequiredModsManifest.write(runtime, profile, selectedMods, config);
 		status.put("serverModCount", Integer.toString(runtimeMods.size()));
 		status.put("requiredModCount", Long.toString(selectedMods.stream().filter(mod -> mod.clientRequired).count()));
 

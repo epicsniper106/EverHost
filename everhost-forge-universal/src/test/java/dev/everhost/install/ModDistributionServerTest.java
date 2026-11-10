@@ -41,6 +41,9 @@ final class ModDistributionServerTest {
 		}
 
 		ModDistributionServer.start(temporary);
+		var listener = ModDistributionServer.class.getDeclaredField("server");
+		listener.setAccessible(true);
+		assertEquals("127.0.0.1", ((java.net.ServerSocket) listener.get(null)).getInetAddress().getHostAddress());
 		String uri = "everhost://127.0.0.1:" + ModDistributionServer.boundPortForTests() + "/mods/" + hash;
 		var artifact = new ModInstallWorker.Artifact("Private Example", java.util.Set.of("private_example"),
 			"private.jar", 0L, 0L, "", hash, "", expected.length, uri, token);

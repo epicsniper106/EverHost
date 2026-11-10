@@ -188,7 +188,7 @@ public final class EverHostUpdater {
 
 	private static UpdateCandidate fetchCandidate(BuildInfo build) throws Exception {
 		URI releases = URI.create("https://api.github.com/repos/" + build.repository() + "/releases?per_page=20");
-		HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15))
+		HttpClient http = httpClientBuilder().connectTimeout(Duration.ofSeconds(15))
 			.followRedirects(HttpClient.Redirect.NORMAL).build();
 		String body = getText(http, releases, MAX_RELEASE_LIST_BYTES, build.version());
 		UpdateCandidate candidate = selectCandidate(body, build);
@@ -203,7 +203,7 @@ public final class EverHostUpdater {
 		Files.createDirectories(updates);
 		Path temporary = updates.resolve(build.assetName() + ".download");
 		Path staged = updates.resolve(build.assetName() + ".pending");
-		HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20))
+		HttpClient http = httpClientBuilder().connectTimeout(Duration.ofSeconds(20))
 			.followRedirects(HttpClient.Redirect.NORMAL).build();
 		HttpRequest request = request(candidate.downloadUri(), build.version()).timeout(Duration.ofMinutes(3)).build();
 		HttpResponse<Path> response = http.send(request, HttpResponse.BodyHandlers.ofFile(temporary));
@@ -217,6 +217,26 @@ public final class EverHostUpdater {
 		verifyJar(temporary, build, candidate.version());
 		move(temporary, staged);
 		return staged;
+	}
+
+	private static HttpClient.Builder httpClientBuilder() {
+		HttpClient.Builder builder = HttpClient.newBuilder();
+		// Use the OS trust roots on Windows, as the mod installer does. This retains
+		// certificate and hostname validation without changing the game's global TLS settings.
+		if (!System.getProperty("os.name", "").toLowerCase(Locale.ROOT).startsWith("windows")
+			|| System.getProperty("javax.net.ssl.trustStore") != null) return builder;
+		try {
+			java.security.KeyStore roots = java.security.KeyStore.getInstance("Windows-ROOT");
+			roots.load(null, null);
+			javax.net.ssl.TrustManagerFactory managers = javax.net.ssl.TrustManagerFactory.getInstance(
+				javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm());
+			managers.init(roots);
+			javax.net.ssl.SSLContext context = javax.net.ssl.SSLContext.getInstance("TLS");
+			context.init(null, managers.getTrustManagers(), new java.security.SecureRandom());
+			return builder.sslContext(context);
+		} catch (Exception unavailable) {
+			return builder; // Java's normal validating trust manager remains the fallback.
+		}
 	}
 
 	private static void verifyJar(Path jarPath, BuildInfo build, String expectedVersion) throws Exception {

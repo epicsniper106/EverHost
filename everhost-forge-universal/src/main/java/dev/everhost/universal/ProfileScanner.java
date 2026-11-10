@@ -158,7 +158,7 @@ public final class ProfileScanner {
 					side = ModSide.SERVER;
 					reason = "Detected a modded-server plugin bridge.";
 				}
-				result.add(new ModInfo(
+				ModInfo info = new ModInfo(
 					name,
 					jar.toAbsolutePath().normalize(),
 					side,
@@ -175,7 +175,11 @@ public final class ProfileScanner {
 					addon != null && addon.distributionAllowed,
 					bridge,
 					clientRequired(inspection, addon, normalized, side)
-				));
+				);
+                info.clientCompatible = inspection.clientCompatible()
+                    && !(addon != null && addon.sideTags.contains("server") && !addon.sideTags.contains("client"));
+                if (info.modIds.contains("spixy_wow_resource_fix")) info.clientCompatible = true;
+                result.add(info);
 			}
 		}
 		result.sort(Comparator.comparing(mod -> mod.name.toLowerCase(Locale.ROOT)));

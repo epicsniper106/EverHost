@@ -57,7 +57,8 @@ public final class ModDistributionServer {
 
 			ServerSocket created = new ServerSocket();
 			created.setReuseAddress(true);
-			created.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 16);
+			// Playit's local target is IPv4 even when Minecraft prefers IPv6 system addresses.
+			created.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 16);
 			ExecutorService executor = Executors.newFixedThreadPool(2, runnable -> {
 				Thread thread = new Thread(runnable, "EverHost-ModDelivery-Worker");
 				thread.setDaemon(true);
@@ -111,16 +112,18 @@ public final class ModDistributionServer {
 				error(output, 3, "Invalid file fingerprint");
 				return;
 			}
-			List<Requirement> requirements = RequiredModsManifest.read(runtime);
+			List<Requirement> requirements = RequiredModsManifest.readShared(runtime);
 			Requirement requirement = requirements.stream().filter(item -> hash.equals(item.sha256())).findFirst().orElse(null);
 			if (requirement == null) {
-				error(output, 4, "The requested file is not required by this server");
+				error(output, 4, "The requested file is not shared by this server");
 				return;
 			}
-			Path mods = runtime.resolve("mods").toAbsolutePath().normalize();
+			Path delivery = runtime.resolve("everhost-delivery-mods");
+            Path mods = (Files.isDirectory(delivery) ? delivery : runtime.resolve("mods")).toAbsolutePath().normalize();
 			Path file = mods.resolve(requirement.fileName()).toAbsolutePath().normalize();
 			if (!mods.equals(file.getParent()) || !Files.isRegularFile(file) || Files.size(file) != requirement.fileSize()
-				|| !ModInstallCoordinator.sha256(file).equalsIgnoreCase(requirement.sha256())) {
+				|| !mods.toRealPath().equals(file.toRealPath().getParent())
+                || !ModInstallCoordinator.sha256(file).equalsIgnoreCase(requirement.sha256())) {
 				error(output, 5, "The server mod file changed; restart the server to refresh its manifest");
 				return;
 			}

@@ -78,6 +78,7 @@ public final class Models {
 		public final long downloadSize;
 		public final boolean distributionAllowed;
 		public final boolean pluginBridge;
+		public boolean clientCompatible = true;
 		public boolean selected;
 		public boolean clientRequired;
 

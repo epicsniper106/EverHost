@@ -27,6 +27,7 @@ public final class ForgeMenuEvents {
 	private static TitleScreen titleScreen;
 	private static Button serverButton;
 	private static boolean testDashboardOpened;
+    private static ModInstallCoordinator.Offer shownOffer;
 	private static final KeyMapping OPEN_DASHBOARD = new KeyMapping(
 		"key.everhost.dashboard",
 		InputConstants.Type.KEYSYM,
@@ -51,7 +52,7 @@ public final class ForgeMenuEvents {
 			String label = ModInstallCoordinator.pendingCount() == 1
 				? "Install Required Mod" : "Install Required Mods";
 			event.addListener(Button.builder(Component.literal(label), ignored ->
-				EverHostClient.installRequiredMods()
+				Minecraft.getInstance().setScreen(new ModDownloadScreen(screen, ModInstallCoordinator.requiredOffer()))
 			).bounds(screen.width / 2 - 100, screen.height - 52, 200, 20).build());
 		}
 	}
@@ -60,6 +61,14 @@ public final class ForgeMenuEvents {
 	public static void onClientTick(TickEvent.ClientTickEvent event) {
 		if (event.phase != TickEvent.Phase.END) return;
 		Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.screen instanceof DisconnectedScreen) {
+            var offer = ModInstallCoordinator.requiredOffer();
+            if (offer == null) offer = ModInstallCoordinator.optionalOffer();
+            if (offer != null && offer != shownOffer) {
+                shownOffer = offer;
+                minecraft.setScreen(new ModDownloadScreen(minecraft.screen, offer));
+            }
+        }
 		EverHostClient.showPendingInstallerResult();
 		EverHostClient.showPendingUpdatePrompt();
 		if (!testDashboardOpened && (minecraft.screen instanceof TitleScreen || minecraft.screen instanceof DisconnectedScreen)

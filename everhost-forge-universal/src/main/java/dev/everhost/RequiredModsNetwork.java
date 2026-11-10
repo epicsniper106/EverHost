@@ -31,6 +31,7 @@ final class RequiredModsNetwork {
 	private static final String PROTOCOL = "3";
 	private static final int MAX_REQUIREMENTS = 8192;
 	private static final int EXTENSION_MAGIC = 0x45484D33;
+    private static final int OPTIONAL_MAGIC = 0x45484F31;
 	private static final SimpleChannel CHANNEL = NetworkRegistry.ChannelBuilder
 		.named(new ResourceLocation("everhost", "required_mods"))
 		.networkProtocolVersion(() -> PROTOCOL)
@@ -73,34 +74,31 @@ final class RequiredModsNetwork {
 		context.setPacketHandled(true);
 	}
 
-	private static List<Pair<String, RequirementsMessage>> loginPackets(boolean local) {
-		List<Requirement> requirements = loadRequirements();
-		if (requirements.isEmpty()) return List.of();
-		return List.of(Pair.of("EverHost required client mods", new RequirementsMessage(requirements)));
-	}
+    private static List<Pair<String, RequirementsMessage>> loginPackets(boolean local) {
+        try {
+            Path runtime = Path.of("").toAbsolutePath().normalize();
+            List<Requirement> required = RequiredModsManifest.read(runtime);
+            List<Requirement> optional = RequiredModsManifest.readOptional(runtime);
+            if (required.isEmpty() && optional.isEmpty()) return List.of();
+            return List.of(Pair.of("EverHost client mods", new RequirementsMessage(required, optional)));
+        } catch (IOException exception) {
+            throw new IllegalStateException("Could not read the EverHost mod catalog", exception);
+        }
+    }
 
-	private static void handle(RequirementsMessage message, Supplier<NetworkEvent.Context> contextSupplier) {
-		NetworkEvent.Context context = contextSupplier.get();
-		Set<String> installed = new LinkedHashSet<>();
-		ModList.get().getMods().forEach(mod -> installed.add(mod.getModId()));
-		Set<Path> loadedPaths = new LinkedHashSet<>();
-		for (Requirement requirement : message.requirements) {
-			for (String modId : requirement.modIds()) {
-				var file = ModList.get().getModFileById(modId);
-				if (file != null) loadedPaths.add(file.getFile().getFilePath().toAbsolutePath().normalize());
-			}
-		}
-		Set<String> hashes = ModInstallCoordinator.hashes(loadedPaths);
-		List<Requirement> missing = ModInstallCoordinator.assess(message.requirements, installed, hashes);
-		if (!missing.isEmpty()) {
-			String disconnectMessage = RequiredModsManifest.missingDisconnectMessage(missing);
-			LOGGER.warn("Disconnecting a client missing required mods: {}", disconnectMessage.replace('\n', ' '));
-			context.getNetworkManager().disconnect(Component.literal(disconnectMessage));
-		} else {
-			CHANNEL.reply(new RequirementsAck(), context);
-		}
-		context.setPacketHandled(true);
-	}
+    private static void handle(RequirementsMessage message, Supplier<NetworkEvent.Context> contextSupplier) {
+        NetworkEvent.Context context = contextSupplier.get();
+        context.enqueueWork(() -> net.minecraftforge.fml.DistExecutor.unsafeRunWhenOn(
+            net.minecraftforge.api.distmarker.Dist.CLIENT,
+            () -> () -> dev.everhost.client.RequiredModsClient.handle(message.requirements, message.optional,
+                context, () -> CHANNEL.reply(new RequirementsAck(), context))))
+            .exceptionally(error -> {
+                LOGGER.error("Could not prepare the client mod check", error);
+                context.getNetworkManager().disconnect(Component.literal("EverHost could not prepare the mod check. See the client log for details."));
+                return null;
+            });
+        context.setPacketHandled(true);
+    }
 
 	private static void handleAck(HandshakeHandler handshake, RequirementsAck message, Supplier<NetworkEvent.Context> contextSupplier) {
 		contextSupplier.get().setPacketHandled(true);
@@ -117,11 +115,13 @@ final class RequiredModsNetwork {
 
 	private static final class RequirementsMessage implements IntSupplier {
 		private final List<Requirement> requirements;
+        private final List<Requirement> optional;
 		private int loginIndex;
 
-		private RequirementsMessage(List<Requirement> requirements) {
-			this.requirements = List.copyOf(requirements);
-		}
+		private RequirementsMessage(List<Requirement> requirements, List<Requirement> optional) {
+            this.requirements = List.copyOf(requirements);
+            this.optional = List.copyOf(optional);
+        }
 
 		private int loginIndex() {
 			return loginIndex;
@@ -157,6 +157,24 @@ final class RequiredModsNetwork {
 				output.writeUtf(requirement.serverDownloadUrl(), 4096);
 				output.writeUtf(requirement.serverToken(), 64);
 			}
+            // Appended after the unchanged v3 required payload: beta11/12 readers can safely ignore this.
+            output.writeInt(OPTIONAL_MAGIC);
+            output.writeVarInt(optional.size());
+            for (Requirement entry : optional) {
+                output.writeUtf(entry.name(), 512);
+                output.writeVarInt(entry.modIds().size());
+                for (String id : entry.modIds()) output.writeUtf(id, 256);
+                output.writeUtf(entry.version(), 512);
+                output.writeUtf(entry.fileName(), 512);
+                output.writeVarLong(entry.curseProjectId());
+                output.writeVarLong(entry.curseFileId());
+                output.writeUtf(entry.downloadUrl(), 4096);
+                output.writeUtf(entry.sha256(), 64);
+                output.writeUtf(entry.curseSha1(), 40);
+                output.writeVarLong(entry.fileSize());
+                output.writeUtf(entry.serverDownloadUrl(), 4096);
+                output.writeUtf(entry.serverToken(), 64);
+            }
 		}
 
 		private static RequirementsMessage decode(FriendlyByteBuf input) {
@@ -183,7 +201,22 @@ final class RequiredModsNetwork {
 				}
 				requirements = exact;
 			}
-			return new RequirementsMessage(requirements);
+			List<Requirement> optional = new ArrayList<>();
+            if (input.readableBytes() >= 5 && input.readInt() == OPTIONAL_MAGIC) {
+                int optionalCount = input.readVarInt();
+                if (optionalCount < 0 || optionalCount > MAX_REQUIREMENTS) throw new IllegalArgumentException("invalid optional count");
+                for (int index = 0; index < optionalCount; index++) {
+                    String name = input.readUtf(512);
+                    int idCount = input.readVarInt();
+                    if (idCount < 1 || idCount > 128) throw new IllegalArgumentException("invalid optional mod id count");
+                    Set<String> ids = new LinkedHashSet<>();
+                    for (int id = 0; id < idCount; id++) ids.add(input.readUtf(256));
+                    optional.add(new Requirement(name, ids, input.readUtf(512), input.readUtf(512),
+                        input.readVarLong(), input.readVarLong(), input.readUtf(4096), input.readUtf(64),
+                        input.readUtf(40), input.readVarLong(), input.readUtf(4096), input.readUtf(64)));
+                }
+            }
+            return new RequirementsMessage(requirements, optional);
 		}
 	}
 

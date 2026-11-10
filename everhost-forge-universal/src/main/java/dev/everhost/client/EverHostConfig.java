@@ -24,6 +24,8 @@ public final class EverHostConfig {
 	public String worldId = "";
 	public String worldName = "";
 	public boolean syncProfileMods = true;
+    public boolean curseForgeFallback = false;
+    public final java.util.Set<String> optionalModExclusions = new java.util.LinkedHashSet<>();
 	public PluginMode pluginMode = PluginMode.OFF;
 	public final Map<String, ModMode> modModes = new LinkedHashMap<>();
 	public final Map<String, PluginState> pluginStates = new LinkedHashMap<>();
@@ -107,6 +109,9 @@ public final class EverHostConfig {
 		config.worldId = values.getProperty("worldId", config.worldId);
 		config.worldName = values.getProperty("worldName", config.worldName);
 		config.syncProfileMods = bool(values, "syncProfileMods", config.syncProfileMods);
+        config.curseForgeFallback = bool(values, "curseForgeFallback", false);
+        for (String file : values.getProperty("optionalModExclusions", "").split("\\n"))
+            if (!file.isBlank()) config.optionalModExclusions.add(file);
 		config.pluginMode = enumeration(values, "pluginMode", PluginMode.class, config.pluginMode);
 		decodeModModes(values.getProperty("modModes", ""), config.modModes);
 		decodePluginStates(values.getProperty("pluginStates", ""), config.pluginStates);
@@ -189,6 +194,8 @@ public final class EverHostConfig {
 		values.setProperty("worldId", worldId);
 		values.setProperty("worldName", worldName);
 		values.setProperty("syncProfileMods", Boolean.toString(syncProfileMods));
+        values.setProperty("curseForgeFallback", Boolean.toString(curseForgeFallback));
+        values.setProperty("optionalModExclusions", String.join("\n", optionalModExclusions));
 		values.setProperty("pluginMode", pluginMode.name().toLowerCase(Locale.ROOT));
 		values.setProperty("modModes", encodeModModes(modModes));
 		values.setProperty("pluginStates", encodePluginStates(pluginStates));
@@ -280,6 +287,8 @@ public final class EverHostConfig {
 		copy.worldId = worldId;
 		copy.worldName = worldName;
 		copy.syncProfileMods = syncProfileMods;
+        copy.curseForgeFallback = curseForgeFallback;
+        copy.optionalModExclusions.addAll(optionalModExclusions);
 		copy.pluginMode = pluginMode;
 		copy.modModes.putAll(modModes);
 		copy.pluginStates.putAll(pluginStates);

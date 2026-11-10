@@ -1,6 +1,8 @@
 package dev.everhost.universal;
 
 import dev.everhost.universal.Models.ModInfo;
+import dev.everhost.install.ModSharingCatalog;
+import java.nio.file.StandardCopyOption;
 import dev.everhost.universal.Models.Profile;
 import java.io.IOException;
 import java.io.InputStream;
@@ -24,6 +26,7 @@ import java.util.Set;
 
 public final class RequiredModsManifest {
 	private static final String DATA_FILE = "everhost-required-client-mods.dat";
+	private static final String OPTIONAL_FILE = "everhost-optional-client-mods.dat";
 	private static final String SOURCE_FILE = "everhost-mod-source.properties";
 	private static final String DATA_HEADER_V1 = "EVERHOST_REQUIRED_MODS_V1";
 	private static final String DATA_HEADER_V2 = "EVERHOST_REQUIRED_MODS_V2";
@@ -129,7 +132,22 @@ public final class RequiredModsManifest {
 	}
 
 	public static Path write(Path runtime, Profile profile, List<ModInfo> selected) throws IOException {
-		List<Requirement> requirements = exactRequirements(selected);
+        return write(runtime, profile, selected, new Properties());
+    }
+
+    public static Path write(Path runtime, Profile profile, List<ModInfo> selected, Properties settings) throws IOException {
+        Set<String> excluded = new LinkedHashSet<>(List.of(settings.getProperty("optionalModExclusions", "").split("\\n")));
+        ModSharingCatalog.Catalog catalog = ModSharingCatalog.create(profile, selected, excluded);
+        List<Requirement> requirements = exactRequirements(catalog.required());
+        List<Requirement> optional = exactRequirements(catalog.optional());
+        Path delivery = Files.createDirectories(runtime.resolve("everhost-delivery-mods"));
+        for (ModInfo mod : java.util.stream.Stream.concat(catalog.required().stream(), catalog.optional().stream()).toList()) {
+            Path targetJar = delivery.resolve(mod.path.getFileName().toString());
+            if (!Files.isRegularFile(targetJar) || !sha256(targetJar).equals(sha256(mod.path))) {
+                Files.copy(mod.path, targetJar, StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+        writeData(runtime.resolve(OPTIONAL_FILE), optional);
 		List<String> lines = new ArrayList<>();
 		lines.add("EverHost required client mods");
 		lines.add("Profile: " + profile.name());
@@ -158,7 +176,21 @@ public final class RequiredModsManifest {
 	}
 
 	public static List<Requirement> read(Path runtime) throws IOException {
-		Path source = runtime.resolve(DATA_FILE);
+        return readFile(runtime, DATA_FILE);
+    }
+
+    public static List<Requirement> readOptional(Path runtime) throws IOException {
+        return readFile(runtime, OPTIONAL_FILE);
+    }
+
+    public static List<Requirement> readShared(Path runtime) throws IOException {
+        List<Requirement> result = new ArrayList<>(read(runtime));
+        result.addAll(readOptional(runtime));
+        return List.copyOf(result);
+    }
+
+    private static List<Requirement> readFile(Path runtime, String file) throws IOException {
+		Path source = runtime.resolve(file);
 		if (!Files.isRegularFile(source)) return List.of();
 		List<String> lines = Files.readAllLines(source, StandardCharsets.UTF_8);
 		if (lines.isEmpty()) return List.of();
@@ -193,7 +225,7 @@ public final class RequiredModsManifest {
 
 	private static List<Requirement> exactRequirements(List<ModInfo> selected) throws IOException {
 		List<Requirement> result = new ArrayList<>();
-		for (ModInfo mod : required(selected)) {
+		for (ModInfo mod : selected) {
 			result.add(new Requirement(
 				mod.name, mod.modIds, mod.exactVersion, mod.path.getFileName().toString(),
 				mod.curseProjectId, mod.curseFileId, mod.downloadUrl, sha256(mod.path), mod.curseSha1,

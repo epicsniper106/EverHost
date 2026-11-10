@@ -67,7 +67,7 @@ public final class ModInstallWorker {
 	}
 
 	public static void main(String[] args) {
-		if (args.length != 5) return;
+		if (args.length != 5 && args.length != 7) return;
 		long parentPid;
 		try {
 			parentPid = Long.parseLong(args[0]);
@@ -85,7 +85,7 @@ public final class ModInstallWorker {
 			try (FileChannel channel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
 				 FileLock lock = channel.tryLock()) {
 				if (lock == null) return;
-				run(parentPid, game, plan, result, log);
+				run(parentPid, game, plan, result, log, args.length == 7 ? Path.of(args[5]) : null, args.length == 7 ? args[6] : "");
 			}
 		} catch (Exception exception) {
 			try {
@@ -96,19 +96,23 @@ public final class ModInstallWorker {
 		}
 	}
 
-	private static void run(long parentPid, Path game, Path planPath, Path result, Path log) throws Exception {
-		boolean reopen = true;
-		try {
-			waitForExit(parentPid);
-			Plan plan = readPlan(game, planPath);
-			reopen = plan.reopenCurseForge();
+	private static void run(long parentPid, Path game, Path planPath, Path result, Path log, Path ready, String nonce) throws Exception {
+        boolean reopen = false;
+        try {
+            Plan plan = readPlan(game, planPath);
+            if (ready != null) {
+                if (!result.getParent().equals(ready.toAbsolutePath().normalize().getParent())) throw new Failure("PLAN", "Invalid readiness path.");
+                Files.writeString(ready, nonce, StandardCharsets.UTF_8);
+            }
+            waitForExit(parentPid);
+            reopen = plan.reopenCurseForge();
 			append(log, "Preparing " + plan.artifacts().size() + " exact required mod file(s)");
 			Path staging = result.getParent().resolve("staging");
 			deleteDirectoryContents(staging);
 			Files.createDirectories(staging);
 			List<PreparedArtifact> prepared = new ArrayList<>();
 			for (int index = 0; index < plan.artifacts().size(); index++) {
-				prepared.add(prepare(game.resolve("mods"), staging, plan.artifacts().get(index), index, log));
+				prepared.add(prepare(game.resolve("mods"), staging, plan.artifacts().get(index), index, log, plan.curseForgeFallback()));
 			}
 			Path backups = game.resolve("everhost").resolve("mod-archive")
 				.resolve(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT)
@@ -133,7 +137,7 @@ public final class ModInstallWorker {
 	}
 
 	private static PreparedArtifact prepare(
-		Path mods, Path staging, Artifact artifact, int index, Path log
+		Path mods, Path staging, Artifact artifact, int index, Path log, boolean fallback
 	) throws Exception {
 		Path target = safeChild(mods, artifact.fileName());
 		if (target == null) throw new Failure("PLAN", artifact.name() + " has an unsafe target filename.");
@@ -144,40 +148,45 @@ public final class ModInstallWorker {
 		}
 		Path staged = staging.resolve(String.format(Locale.ROOT, "%04d.jar", index));
 		Files.deleteIfExists(staged);
+		boolean fromCurseForge = false;
 		Path localExact = findExactJar(mods, artifact.sha256());
 		if (localExact != null) {
 			Files.copy(localExact, staged, StandardCopyOption.REPLACE_EXISTING);
 			append(log, "READY reused exact local file for " + artifact.name());
 		} else {
-			String source = download(staged, artifact);
-			append(log, "DOWNLOADED " + artifact.name() + " " + source);
+			DownloadResult source = download(staged, artifact, fallback);
+            fromCurseForge = source.curseForge();
+			append(log, "DOWNLOADED " + artifact.name() + " " + source.description());
 		}
-		verifyDownloaded(staged, artifact);
+		verifyDownloaded(staged, artifact, fromCurseForge);
 		return new PreparedArtifact(artifact, staged, false);
 	}
 
-	private static String download(Path target, Artifact artifact) throws Exception {
+	private static DownloadResult download(Path target, Artifact artifact, boolean fallback) throws Exception {
 		Failure directFailure = null;
 		if (validDirectSource(artifact.serverUrl(), artifact.serverToken(), artifact.sha256())) {
 			try {
 				downloadDirect(target, artifact);
-				return "directly from the hosting EverHost server";
+				return new DownloadResult("directly from the hosting EverHost server", false);
 			} catch (Failure failure) {
 				directFailure = failure;
 				Files.deleteIfExists(target);
 			}
 		}
-		if (hasCurseForgeSource(artifact)) {
+		if (fallback && hasCurseForgeSource(artifact)) {
 			downloadCurseForge(target, artifact);
-			return "from CurseForge project " + artifact.projectId() + " file " + artifact.fileId()
-				+ (directFailure == null ? "" : " after the direct server route was unavailable");
+			return new DownloadResult("from CurseForge project " + artifact.projectId() + " file " + artifact.fileId()
+                + (directFailure == null ? "" : " after the direct server route was unavailable"), true);
 		}
-		if (directFailure != null) throw directFailure;
-		throw new Failure("DOWNLOAD", artifact.name() + " has no reachable approved download source.");
+        if (!fallback) throw new Failure("HOST_DOWNLOAD", artifact.name()
+            + " could not be downloaded from the host. CurseForge fallback is OFF."
+            + (directFailure == null ? " The host did not supply a direct source." : " " + directFailure.getMessage()));
+        if (directFailure != null) throw directFailure;
+        throw new Failure("DOWNLOAD", artifact.name() + " has no reachable approved download source.");
 	}
 
 	static String downloadForTests(Path target, Artifact artifact) throws Exception {
-		return download(target, artifact);
+		return download(target, artifact, false).description();
 	}
 
 	private static void downloadDirect(Path target, Artifact artifact) throws Exception {
@@ -326,7 +335,7 @@ public final class ModInstallWorker {
 		}
 	}
 
-	private static void verifyDownloaded(Path file, Artifact artifact) throws Exception {
+	private static void verifyDownloaded(Path file, Artifact artifact, boolean fromCurseForge) throws Exception {
 		long actualSize = Files.size(file);
 		if (actualSize <= 0L || actualSize > MAX_MOD_BYTES) {
 			Files.deleteIfExists(file);
@@ -342,7 +351,7 @@ public final class ModInstallWorker {
 			Files.deleteIfExists(file);
 			throw new Failure("CHECKSUM", artifact.name() + " did not match the server's SHA-256 fingerprint.");
 		}
-		if (!artifact.sha1().isBlank()) {
+		if (fromCurseForge && !artifact.sha1().isBlank()) {
 			String actualSha1 = digest(file, "SHA-1");
 			if (!MessageDigest.isEqual(actualSha1.getBytes(StandardCharsets.US_ASCII),
 				artifact.sha1().getBytes(StandardCharsets.US_ASCII))) {
@@ -431,6 +440,7 @@ public final class ModInstallWorker {
 			throw new Failure("PLAN", "The pending installation plan has an invalid profile path.");
 		}
 		if (!plannedGame.equals(expectedGame)) throw new Failure("PLAN", "The installation plan belongs to a different CurseForge profile.");
+		boolean fallback = Boolean.parseBoolean(values.getProperty("curseForgeFallback", "false"));
 		int count = integer(values.getProperty("count"), -1);
 		if (count < 1 || count > 8192) throw new Failure("PLAN", "The installation plan has an invalid mod count.");
 		List<Artifact> artifacts = new ArrayList<>();
@@ -457,13 +467,13 @@ public final class ModInstallWorker {
 			}
 			boolean direct = validDirectSource(serverUrl, serverToken, sha256);
 			boolean curseForge = projectId > 0L && fileId > 0L && approvedUrl(url);
-			if (!direct && !curseForge) {
-				throw new Failure("PLAN", name + " has no valid direct server or CurseForge download source.");
+			if (!direct && !(fallback && curseForge)) {
+				throw new Failure("PLAN", name + " has no allowed download source. CurseForge fallback is " + (fallback ? "ON." : "OFF."));
 			}
 			artifacts.add(new Artifact(name, Set.copyOf(ids), fileName, projectId, fileId, url, sha256, sha1, size,
 				serverUrl, serverToken));
 		}
-		return new Plan(List.copyOf(artifacts), Boolean.parseBoolean(values.getProperty("reopenCurseForge", "true")));
+		return new Plan(List.copyOf(artifacts), Boolean.parseBoolean(values.getProperty("reopenCurseForge", "true")), fallback);
 	}
 
 	private static Map<Path, Set<String>> scanJarIds(Path mods) throws IOException {
@@ -746,7 +756,9 @@ public final class ModInstallWorker {
 	static record InstallSummary(int installed, int archived, Path backupDirectory) {
 	}
 
-	private record Plan(List<Artifact> artifacts, boolean reopenCurseForge) {
+	private record DownloadResult(String description, boolean curseForge) {}
+
+	private record Plan(List<Artifact> artifacts, boolean reopenCurseForge, boolean curseForgeFallback) {
 	}
 
 	private record MoveRecord(Path original, Path backup) {

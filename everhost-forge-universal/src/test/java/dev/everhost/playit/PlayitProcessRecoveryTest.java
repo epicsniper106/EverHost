@@ -2,6 +2,7 @@ package dev.everhost.playit;
 
 import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import static org.junit.jupiter.api.Assertions.*;
@@ -18,8 +19,14 @@ final class PlayitProcessRecoveryTest {
         Path java = Path.of(System.getProperty("java.home"), "bin", System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java");
         Path ownSecret = root.resolve("profile with spaces/own-agent.toml");
         String classpath = Path.of(Sleeper.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
-        Process owned = new ProcessBuilder(java.toString(), "-cp", classpath, Sleeper.class.getName(), ownSecret.toString()).start();
+        Process owned = new ProcessBuilder(java.toString(), "-cp", classpath, Sleeper.class.getName(), ownSecret.toString()).redirectErrorStream(true).start();
         try {
+            var reader = owned.inputReader();
+            String startup = CompletableFuture.supplyAsync(() -> {
+                try { String line; while ((line = reader.readLine()) != null) if (line.equals("READY")) return line; return "Exited before READY"; }
+                catch (java.io.IOException exception) { return exception.toString(); }
+            }).get(10, TimeUnit.SECONDS);
+            assertEquals("READY", startup);
             AgentOwner owner = new AgentOwner(java, ownSecret);
             assertTrue(PlayitProcessRecovery.ensureRunning(owner));
             assertEquals(owned.pid(), owner.agentHandle.pid());
@@ -31,6 +38,6 @@ final class PlayitProcessRecoveryTest {
     }
 
     public static final class Sleeper {
-        public static void main(String[] args) throws Exception { Thread.sleep(30000L); }
+        public static void main(String[] args) throws Exception { System.out.println("READY"); Thread.sleep(30000L); }
     }
 }

@@ -66,16 +66,33 @@ public final class EverHostClient {
 		HostService.showNotification(result.title(), result.message());
 	}
 
-	public static void installRequiredMods() {
-		try {
-			Path javaExecutable = Path.of(System.getProperty("java.home"), "bin", isWindows() ? "java.exe" : "java");
-			ModInstallCoordinator.launch(LoaderBridge.gameDirectory(), javaExecutable, LoaderBridge.installedModPath());
-			Minecraft.getInstance().stop();
-		} catch (Exception exception) {
-			HostService.showNotification("Automatic mod installation failed",
-				exception.getMessage() == null ? exception.toString() : exception.getMessage());
-		}
-	}
+    public static void installRequiredMods() {
+        var offer = ModInstallCoordinator.requiredOffer();
+        if (offer != null) Minecraft.getInstance().setScreen(new ModDownloadScreen(Minecraft.getInstance().screen, offer));
+    }
+
+    public static void installServerMods(ModInstallCoordinator.Offer offer, boolean suppressOptional, Consumer<String> status) {
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            try {
+                Path javaExecutable = Path.of(System.getProperty("java.home"), "bin", isWindows() ? "java.exe" : "java");
+                ModInstallCoordinator.launch(LoaderBridge.gameDirectory(), javaExecutable, LoaderBridge.installedModPath(), offer);
+                if (offer.optional()) {
+                    try { ModInstallCoordinator.dismissOptional(LoaderBridge.gameDirectory(), offer, suppressOptional); }
+                    catch (java.io.IOException ignored) { /* Installation can proceed even when a preference cannot be saved. */ }
+                }
+                Minecraft.getInstance().execute(() -> {
+                    status.accept("Installer ready. Closing Minecraft...");
+                    Minecraft.getInstance().stop();
+                });
+            } catch (Exception exception) {
+                Minecraft.getInstance().execute(() -> {
+                    String detail = exception.getMessage() == null ? exception.toString() : exception.getMessage();
+                    status.accept("Failed: " + detail);
+                    HostService.showNotification("Automatic mod installation failed", detail);
+                });
+            }
+        });
+    }
 
 	public static void offerUpdate(EverHostUpdater.UpdateCandidate candidate) {
 		if (candidate == null) return;
