@@ -101,6 +101,14 @@ final class JarInspector {
 					reason = "Forge metadata only declares client-side dependencies.";
 				}
 			}
+            if (forge == null && loader == LoaderType.FORGE) {
+                Set<String> embedded = dev.everhost.install.NestedForgeModIds.read(zip);
+                if (!embedded.isEmpty()) {
+                    ids.addAll(embedded);
+                    clientCompatible = true;
+                    reason = "Forge library container provides embedded mod dependencies.";
+                }
+            }
 		} catch (IOException | RuntimeException exception) {
 			reason = "Metadata could not be read: " + exception.getMessage();
 		}

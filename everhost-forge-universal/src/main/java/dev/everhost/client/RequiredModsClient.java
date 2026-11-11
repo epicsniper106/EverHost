@@ -14,6 +14,7 @@ import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.ClientHandshakePacketListenerImpl;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.client.gui.screens.ConnectScreen;
+import net.minecraft.client.gui.screens.DisconnectedScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.Connection;
 import net.minecraft.network.chat.Component;
@@ -41,6 +42,11 @@ public final class RequiredModsClient {
         Set<Path> paths = new LinkedHashSet<>();
         ModList.get().getMods().forEach(mod -> installed.add(mod.getModId()));
         for (Requirement entry : java.util.stream.Stream.concat(required.stream(), optional.stream()).toList()) {
+            // A loaded nested mod has a different JAR path and hash from its downloadable outer container.
+            if (installed.containsAll(entry.modIds())) {
+                Path outer = LoaderBridge.gameDirectory().resolve("mods").resolve(entry.fileName()).normalize();
+                if (outer.getParent().equals(LoaderBridge.gameDirectory().resolve("mods").normalize())) paths.add(outer);
+            }
             for (String id : entry.modIds()) {
                 var file = ModList.get().getModFileById(id);
                 if (file != null) paths.add(file.getFile().getFilePath().toAbsolutePath().normalize());
@@ -48,7 +54,10 @@ public final class RequiredModsClient {
         }
         CompletableFuture.supplyAsync(() -> ModInstallCoordinator.hashes(paths))
             .whenComplete((hashes, error) -> minecraft.execute(() -> {
-                if (activeConnection != connection || !connection.isConnected()) return;
+                if (activeConnection != connection) return;
+                // Forge may reject a missing channel while a large installed pack is still hashing.
+                // Keep the received catalog usable on that disconnect screen, without interrupting navigation.
+                if (!connection.isConnected() && !(minecraft.screen instanceof DisconnectedScreen)) return;
                 try {
                     if (error != null) throw new IllegalStateException("Could not check installed mods.", error);
                     String key = ModDownloadPreferences.serverKey(address);
@@ -60,7 +69,7 @@ public final class RequiredModsClient {
                         connection.disconnect(Component.literal(RequiredModsManifest.missingDisconnectMessage(missing)));
                     } else if (ModInstallCoordinator.optionalOffer() != null) {
                         connection.disconnect(Component.literal("Your required mods are ready. Optional mods are available from this host."));
-                    } else {
+                    } else if (connection.isConnected()) {
                         acknowledge.run();
                     }
                 } catch (Exception exception) {

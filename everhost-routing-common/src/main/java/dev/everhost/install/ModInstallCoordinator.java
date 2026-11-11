@@ -109,7 +109,7 @@ public final class ModInstallCoordinator {
     }
 
     public static Launch launch(Path gameDirectory, Path javaExecutable, Path everHostJar, Offer offer) throws IOException {
-        if (!LAUNCHING.compareAndSet(false, true)) throw new IOException("A mod installation is already starting.");
+        if (!LAUNCHING.compareAndSet(false, true)) throw new InstallationBusyException("A mod installation is already starting.");
         try {
             return launchOnce(gameDirectory, javaExecutable, everHostJar, offer);
         } catch (IOException | RuntimeException exception) {
@@ -119,6 +119,22 @@ public final class ModInstallCoordinator {
     }
 
     private static Launch launchOnce(Path gameDirectory, Path javaExecutable, Path everHostJar, Offer offer) throws IOException {
+        Path launchRoot = gameDirectory.toAbsolutePath().normalize().resolve("everhost/mod-installer");
+        Files.createDirectories(launchRoot);
+        try (var channel = java.nio.channels.FileChannel.open(launchRoot.resolve("launch.lock"),
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE)) {
+            try (var lock = channel.tryLock()) {
+                if (lock == null) throw new InstallationBusyException("A mod installation is already starting.");
+                String running = ModInstallProgress.running(gameDirectory.toAbsolutePath().normalize());
+                if (!running.isBlank()) throw new InstallationBusyException(running);
+                return prepareLaunch(gameDirectory, javaExecutable, everHostJar, offer);
+            } catch (java.nio.channels.OverlappingFileLockException busy) {
+                throw new InstallationBusyException("A mod installation is already starting.");
+            }
+        }
+    }
+
+    private static Launch prepareLaunch(Path gameDirectory, Path javaExecutable, Path everHostJar, Offer offer) throws IOException {
 		if (offer == null || offer.requirements().isEmpty()) {
 			throw new IOException("The server did not provide a current mod installation offer. Reconnect and try again.");
 		}
@@ -180,12 +196,23 @@ public final class ModInstallCoordinator {
             Thread.currentThread().interrupt();
         }
         worker.destroy();
-        throw new IOException("The installer could not start. Minecraft was kept open. See everhost/mod-installer/installer.log.");
+        try {
+            if (!worker.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) worker.destroyForcibly();
+        } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        Files.deleteIfExists(ready);
+        Properties failure = new Properties();
+        if (Files.isRegularFile(result)) {
+            try (var reader = Files.newBufferedReader(result, StandardCharsets.UTF_8)) { failure.load(reader); }
+        }
+        String detail = failure.getProperty("message", "The installer did not confirm that it was ready.");
+        throw new IOException(detail + " Minecraft was kept open. See everhost/mod-installer/installer.log.");
 
 	}
 
 	/** Reads and independently verifies the worker result on the next Minecraft launch. */
 	public static Optional<Result> consumeResult(Path gameDirectory) {
+		try { if (!ModInstallProgress.running(gameDirectory).isBlank()) return Optional.empty(); }
+		catch (IOException unavailable) { return Optional.empty(); }
 		Path root = gameDirectory.toAbsolutePath().normalize().resolve("everhost").resolve("mod-installer");
 		Path resultFile = root.resolve("result.properties");
 		if (!Files.isRegularFile(resultFile)) return Optional.empty();
@@ -344,6 +371,10 @@ public final class ModInstallCoordinator {
         public Offer { requirements = List.copyOf(requirements); }
         public long totalBytes() { return requirements.stream().mapToLong(Requirement::fileSize).sum(); }
     }
+
+	public static final class InstallationBusyException extends IOException {
+		public InstallationBusyException(String message) { super(message); }
+	}
 
 	public record Launch(int modCount, Path installerDirectory) {
 	}

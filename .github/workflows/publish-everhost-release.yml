@@ -39,5 +39,5 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --latest \
-            --title "EverHost 1.0 Release - ${version}" \
+            --title "EverHost ${version}" \
             --notes-file "${notes}"

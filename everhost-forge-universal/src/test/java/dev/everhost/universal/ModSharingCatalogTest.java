@@ -58,6 +58,14 @@ final class ModSharingCatalogTest {
         assertEquals(List.of(required), ModSharingCatalog.create(profile(List.of(required)), List.of(required), Set.of()).required());
     }
 
+    @Test void requiredInstallAlsoIncludesTheKnownStartupCompatibilityFix() throws Exception {
+        ModInfo content = jar("content", ModSide.SERVER, true, null);
+        ModInfo fix = jar("spixy_wow_resource_fix", ModSide.CLIENT, false, null);
+        var catalog = ModSharingCatalog.create(profile(List.of(content, fix)), List.of(content, fix), Set.of("spixy_wow_resource_fix.jar"));
+        assertEquals(Set.of(content, fix), Set.copyOf(catalog.required()));
+        assertFalse(catalog.optional().contains(fix));
+    }
+
     @Test void manifestSeparatesListsAndStagesExactOptionalFilesOutsideModsFolder() throws Exception {
         ModInfo required = jar("required", ModSide.SERVER, true, null);
         ModInfo extra = jar("extra", ModSide.CLIENT, false, null);

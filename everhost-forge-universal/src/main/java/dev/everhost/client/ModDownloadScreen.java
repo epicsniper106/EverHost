@@ -24,7 +24,9 @@ public final class ModDownloadScreen extends Screen {
 
     public ModDownloadScreen(Screen parent, ModInstallCoordinator.Offer offer) {
         super(Component.literal(offer.optional() ? "Optional server mods" : "Install required server mods"));
-        this.parent = parent;
+        this.parent = parent instanceof net.minecraft.client.gui.screens.DisconnectedScreen
+            ? new net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen(new net.minecraft.client.gui.screens.TitleScreen())
+            : parent;
         this.offer = offer;
     }
 
@@ -71,7 +73,10 @@ public final class ModDownloadScreen extends Screen {
         rebuildWidgets();
         EverHostClient.installServerMods(offer, suppressChoice, message -> {
             status = message;
-            if (message.startsWith("Failed:")) { busy = false; rebuildWidgets(); }
+            if (message.startsWith("Failed:") || message.startsWith("Installation in progress:")) {
+                busy = false;
+                rebuildWidgets();
+            }
         });
     }
 

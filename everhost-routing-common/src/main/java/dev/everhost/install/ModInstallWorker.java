@@ -98,41 +98,56 @@ public final class ModInstallWorker {
 
 	private static void run(long parentPid, Path game, Path planPath, Path result, Path log, Path ready, String nonce) throws Exception {
         boolean reopen = false;
+        ModInstallWindow window = null;
         try {
             Plan plan = readPlan(game, planPath);
+            ModInstallProgress.write(result.getParent(), "WAITING", 0, plan.artifacts().size(), "Waiting for Minecraft to close.");
             if (ready != null) {
                 if (!result.getParent().equals(ready.toAbsolutePath().normalize().getParent())) throw new Failure("PLAN", "Invalid readiness path.");
                 Files.writeString(ready, nonce, StandardCharsets.UTF_8);
             }
             waitForExit(parentPid);
             reopen = plan.reopenCurseForge();
+            window = ModInstallWindow.open(plan.artifacts().size());
 			append(log, "Preparing " + plan.artifacts().size() + " exact required mod file(s)");
 			Path staging = result.getParent().resolve("staging");
 			deleteDirectoryContents(staging);
 			Files.createDirectories(staging);
 			List<PreparedArtifact> prepared = new ArrayList<>();
 			for (int index = 0; index < plan.artifacts().size(); index++) {
+				String message = "Downloading mod " + (index + 1) + " of " + plan.artifacts().size() + " - " + plan.artifacts().get(index).name();
+				ModInstallProgress.write(result.getParent(), "DOWNLOADING", index, plan.artifacts().size(), message);
+				window.update(index, message);
 				prepared.add(prepare(game.resolve("mods"), staging, plan.artifacts().get(index), index, log, plan.curseForgeFallback()));
 			}
+			ModInstallProgress.write(result.getParent(), "APPLYING", prepared.size(), prepared.size(), "Downloads verified. Installing mod files.");
+			window.update(prepared.size(), "Downloads verified. Installing mod files.");
 			Path backups = game.resolve("everhost").resolve("mod-archive")
 				.resolve(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.ROOT)
 					.format(java.time.LocalDateTime.now()));
 			InstallSummary summary = applyPrepared(game.resolve("mods"), backups, prepared);
-			String reopenWarning = reopen ? reopenCurseForge() : "";
-			writeSuccess(result, plan.artifacts(), summary, reopenWarning);
+			writeSuccess(result, plan.artifacts(), summary, "");
 			archivePlan(planPath);
+			ModInstallProgress.write(result.getParent(), "SUCCESS", prepared.size(), prepared.size(), "All mods installed and verified. Launch this profile again.");
 			append(log, "SUCCESS installed and verified " + plan.artifacts().size() + " required mod file(s)");
+			window.close();
+			String reopenWarning = reopen ? reopenCurseForge() : "";
+			if (!reopenWarning.isBlank()) writeSuccess(result, plan.artifacts(), summary, reopenWarning);
 			if (!reopenWarning.isBlank()) append(log, "REOPEN " + reopenWarning);
 		} catch (Failure failure) {
 			append(log, failure.code + " " + safeMessage(failure));
 			writeFailure(result, failure.code, safeMessage(failure));
+			ModInstallProgress.write(result.getParent(), "FAILED", 0, 0, safeMessage(failure));
 			archivePlan(planPath);
 			if (reopen) reopenCurseForge();
 		} catch (Exception exception) {
 			append(log, "INSTALL " + safeMessage(exception));
 			writeFailure(result, "INSTALL", safeMessage(exception));
+			ModInstallProgress.write(result.getParent(), "FAILED", 0, 0, safeMessage(exception));
 			archivePlan(planPath);
 			if (reopen) reopenCurseForge();
+		} finally {
+			if (window != null) window.close();
 		}
 	}
 
@@ -511,6 +526,7 @@ public final class ModInstallWorker {
 				Matcher matcher = FORGE_ID.matcher(toml);
 				while (matcher.find()) ids.add(matcher.group(1));
 			}
+			if (forge == null) ids.addAll(NestedForgeModIds.read(zip));
 		}
 		return Set.copyOf(ids);
 	}

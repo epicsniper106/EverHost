@@ -96,7 +96,7 @@ final class HostModInstallationTest {
         Path executable = Path.of(System.getProperty("user.home"),"curseforge/minecraft/Install/java/java-runtime-gamma/bin/java.exe");
         if (!Files.isRegularFile(executable)) executable = Path.of(System.getProperty("java.home"),"bin","java");
         String classes = Path.of(ModInstallWorker.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
-        Process worker = new ProcessBuilder(executable.toString(), "-cp",classes,ModInstallWorker.class.getName(),
+        Process worker = new ProcessBuilder(executable.toString(), "-Djava.awt.headless=true", "-cp",classes,ModInstallWorker.class.getName(),
             "0",game.toString(),plan.toString(),result.toString(),root.resolve("installer.log").toString())
             .redirectErrorStream(true).redirectOutput(root.resolve("process.log").toFile()).start();
         assertTrue(worker.waitFor(30,TimeUnit.SECONDS), "installer should finish");

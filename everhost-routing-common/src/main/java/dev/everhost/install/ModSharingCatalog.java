@@ -52,7 +52,8 @@ public final class ModSharingCatalog {
             if (mod.curseProjectId > 0) byProject.putIfAbsent(mod.curseProjectId, mod);
         }
         // A host's explicit Required choice takes precedence over imperfect distribution-side metadata.
-        Set<ModInfo> required = closure(selected.stream().filter(m -> m.clientRequired && shareable(m)).toList(), byId, byProject);
+        Set<ModInfo> required = closure(selected.stream()
+            .filter(m -> (m.clientRequired || m.modIds.contains("spixy_wow_resource_fix")) && shareable(m)).toList(), byId, byProject);
         List<ModInfo> optionalRoots = profile.mods().stream().filter(ModSharingCatalog::optionalByDefault)
             .filter(m -> !required.contains(m) && !excluded.contains(m.path.getFileName().toString())).toList();
         Set<ModInfo> optional = closure(optionalRoots, byId, byProject);
@@ -90,6 +91,8 @@ public final class ModSharingCatalog {
                 try (var stream = zip.getInputStream(forge)) {
                     toml = new String(stream.readNBytes(2 * 1024 * 1024), StandardCharsets.UTF_8);
                 }
+                var loader = Pattern.compile("(?m)^\\s*modLoader\\s*=\\s*[\"']([A-Za-z0-9_.-]+)[\"']").matcher(toml);
+                if (loader.find() && !Set.of("javafml", "lowcodefml").contains(loader.group(1))) result.add(loader.group(1));
                 for (String table : toml.split("(?m)^\\s*\\[\\[")) {
                     if (!table.startsWith("dependencies.") || !MANDATORY.matcher(table).find()
                         || SERVER_DEPENDENCY.matcher(table).find()) continue;

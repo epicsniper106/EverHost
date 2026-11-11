@@ -87,8 +87,13 @@ public final class EverHostClient {
             } catch (Exception exception) {
                 Minecraft.getInstance().execute(() -> {
                     String detail = exception.getMessage() == null ? exception.toString() : exception.getMessage();
-                    status.accept("Failed: " + detail);
-                    HostService.showNotification("Automatic mod installation failed", detail);
+                    if (exception instanceof ModInstallCoordinator.InstallationBusyException) {
+                        status.accept("Installation in progress: " + detail);
+                        HostService.showNotification("Mod installation in progress", detail);
+                    } else {
+                        status.accept("Failed: " + detail);
+                        HostService.showNotification("Automatic mod installation failed", detail);
+                    }
                 });
             }
         });
